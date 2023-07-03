@@ -1,0 +1,6 @@
+# This file is managed by Salt.
+# Manual changes might be overwritten.
+
+{%- for ca in openssh.client.trusted_host_cas %}
+@cert-authority {{ ca.hosts }} {{ ca.key }}
+{%- endfor %}
