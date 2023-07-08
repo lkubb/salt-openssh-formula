@@ -9,4 +9,4 @@
 
 OpenSSH global known hosts file is absent:
   file.absent:
-    - name: {{ salt["file.dirname"](openssh.lookup.config.client) | path_join("known_hosts") }}
+    - name: {{ salt["file.dirname"](openssh.lookup.config.client) | path_join("ssh_known_hosts") }}

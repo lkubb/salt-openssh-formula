@@ -10,9 +10,9 @@ include:
 
 OpenSSH global known hosts are managed:
   file.managed:
-    - name: {{ salt["file.dirname"](openssh.lookup.config.client) | path_join("known_hosts") }}
+    - name: {{ salt["file.dirname"](openssh.lookup.config.client) | path_join("ssh_known_hosts") }}
     - source: {{ files_switch(
-                    ["known_hosts", "known_hosts.j2"],
+                    ["ssh_known_hosts", "ssh_known_hosts.j2"],
                     config=openssh,
                     lookup="OpenSSH global known hosts are managed",
                  )
