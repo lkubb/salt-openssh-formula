@@ -33,7 +33,11 @@ openssh:
     trusted_host_cas: []
     # Example:
     ##########
-    # - hosts: *.example.com
+    # - hosts: '*.example.com'
+    #   key: ssh-ed25519 AAAAC3...
+    # - hosts:
+    #     - '*.example.io'
+    #     - '10.1.*.*'
     #   key: ssh-ed25519 AAAAC3...
     ##########
 

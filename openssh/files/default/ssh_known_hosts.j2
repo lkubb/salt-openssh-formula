@@ -2,5 +2,5 @@
 # Manual changes might be overwritten.
 
 {%- for ca in openssh.client.trusted_host_cas %}
-@cert-authority {{ ca.hosts }} {{ ca.key }}
+@cert-authority {{ (ca.hosts | join(",")) if ca.hosts | is_list else ca.hosts }} {{ ca.key }}
 {%- endfor %}
