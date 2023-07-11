@@ -7,6 +7,9 @@ Manage OpenSSH keys and certificates
 .. note::
 
     * Certificate operations require at least cryptography release 40
+    * Certificate operations with ``force-command`` and ``source-address``
+      (or any critical option/extension with a value) should only be relied
+      upon in releases >= 41.0.2 (https://github.com/pyca/cryptography/issues/9207)
     * Operations with encrypted private keys require the
       ``bcrypt`` module, which is installable as ``cryptography[ssh]`` as well.
 
