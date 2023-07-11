@@ -36,6 +36,7 @@ openssh:
     version: latest
   server:
     authorized_keys: {}
+    authorized_principals: {}
     cert_params:
       all_principals: false
       backend: null

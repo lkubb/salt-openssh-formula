@@ -50,3 +50,37 @@ OpenSSH server moduli file is managed:
     - require:
       - sls: {{ sls_package_install }}
 {%- endif %}
+
+{%- if openssh.server.config.get("AuthorizedPrincipalsFile", "none") != "none" and openssh.server.authorized_principals %}
+{%-   set pfile = openssh.server.config["AuthorizedPrincipalsFile"] %}
+{%-   set requires_home = "%h" in pfile %}
+
+OpenSSH authorized principals are managed:
+  file.managed:
+    - names:
+{%-   for user, principals in openssh.server.authorized_principals.items() %}
+{%-     set user_info = salt["user.info"](user) if requires_home else none %}
+{%-     set home = (user_info.home if user_info else "__slot__:salt:user.info('" ~ user ~ "').home ~ ") if requires_home else "" %}
+{%-     set primary_group = (salt["user.primary_group"](user) if user_info else ("__slot__:salt:user.primary_group('" ~  user ~ "')"))
+                            if requires_home else openssh.lookup.rootgroup %}
+
+        - {{ pfile | replace("%h", home) | replace("%u", user) | replace("%%", "%") }}:
+          - context:
+              principals: {{ principals | json }}
+          - user: {{ user if requires_home else "root" }}
+          - group: {{ primary_group }}
+{%-   endfor %}
+    - source: {{ files_switch(
+                    ["principals.j2"],
+                    config=openssh,
+                    lookup="OpenSSH authorized principals are managed",
+                 )
+              }}
+    - mode: '0600'
+    - makedirs: true
+    - template: jinja
+    - require:
+      - sls: {{ sls_package_install }}
+    - defaults:
+        openssh: {{ openssh | json }}
+{%- endif %}

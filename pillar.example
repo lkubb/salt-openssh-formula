@@ -5,7 +5,7 @@ openssh:
     # Formula settings for the OpenSSH client
   client:
       # When generating client certificates, use these parameters
-      # to ``ssh_pki.certificate_managed`` by default.
+      # to `ssh_pki.certificate_managed` by default.
     cert_params:
       all_principals: false
       backend: null
@@ -15,54 +15,91 @@ openssh:
       ttl: null
       ttl_remaining: null
       valid_principals: null
+
       # The global SSH client configuration.
       # Use the regular syntax for usual options.
       # `Host` should be a dictionary where the keys
       # are the hosts to match.
     config: {}
+
       # On Debian/RedHat systems, this formula defaults to serializing the configuration
       # to `/etc/ssh/ssh_config.d/10-salt.conf`. This keeps the
       # system default configuration intact. Set this to true
       # to overwrite the default client configuration.
     config_override_default: false
+
       # A list of CA keys and hostnames they should be valid for which
       # will be serialized to the default known_hosts in /etc/ssh/known_hosts.
-      # Example:
-      # - hosts: *.example.com
-      #   key: ssh-ed25519 AAAAC3...
     trusted_host_cas: []
+    # Example:
+    ##########
+    # - hosts: *.example.com
+    #   key: ssh-ed25519 AAAAC3...
+    ##########
+
       # Manage user keys/certificates. Keys are usernames, values
-      # again a mapping of key names to configuration options. Example:
-      # user:
-      #   id_rsa:
-      #     algo: rsa
-      #     keysize: 3072
-      #     cert: true
-      #     dir: /some/special/dir  # defaults to ~/.ssh
-      #     new: false  # Generate a new key each time a certificate is regenerated.
-      #                 # Defaults to false.
-      #     group: some_other_group  # defaults to the user's primary group
-      #     ttl: 86400  # cert params are taken from openssh:client:cert_params,
-      #                 # but can be overridden per key as well.
+      # again a mapping of key names to configuration options.
     user_keys: {}
+    # Example:
+    ##########
+    # user:
+    #   id_rsa:
+    #     algo: rsa
+    #     keysize: 3072
+    #     cert: true
+    #     dir: /some/special/dir  # defaults to ~/.ssh
+    #     new: false  # Generate a new key each time a certificate is regenerated.
+    #                 # Defaults to false.
+    #     group: some_other_group  # defaults to the user's primary group
+    #     ttl: 86400  # cert params are taken from openssh:client:cert_params,
+    #                 # but can be overridden per key as well.
+    ##########
+
       # The client version to install.
     version: latest
 
     # Formula settings for the OpenSSH server
   server:
       # A map of usernames to parameters to ssh_auth.present/manage/absent.
-      # Example:
-      # john:
-      #   options: []
-      #   comment: ''
-      #   keys:
-      #     - ssh-rsa AAAAB...
-      #   sync: false
-      #   keys_absent:  # Removes authorized keys. Irrelevant when sync is false.
-      #     - ssh-rsa AAAAC...
     authorized_keys: {}
+    # Example:
+    ##########
+    # john:
+    #   options: []
+    #   comment: ''
+    #   keys:
+    #     - ssh-rsa AAAAB...
+    #   sync: false
+    #   keys_absent:  # Removes authorized keys. Irrelevant when sync is false.
+    #     - ssh-rsa AAAAC...
+    ##########
+
+      # If `server:config:AuthorizedPrincipalsFile` is not `none`,
+      # render authorized principals into the system user-specific file.
+      # This is a mapping of username to a list of authorized principals,
+      # where an authorized principal can either be a string, which will be
+      # rendered to a line as-is, or a mapping with keys of `options` and `user`.
+      # `options` again is a mapping of option names to values. If it's a flag,
+      # set the value to true, if it's `environment`, you can specify multiple
+      # values as a map again. Serialized files will be owned by root, unless
+      # `%h` was used as part of the definition.
+    authorized_principals: {}
+    # Example:
+    ##########
+    # sre:  # the local username
+    #   - team-a  # Allowed principal as specified in the certificate
+    #   - name: team-b
+    #     options:
+    #       allow-pty: true
+    #       force-command: rm -rf /
+    #       environment:
+    #         ENV_A: say
+    #         ENV_B: what
+    # steve:
+    #   - allow-pty,force-command="echo moo" team-c
+
       # When generating host certificates, use these parameters
-      # to ``ssh_pki.certificate_managed``.
+      # to `ssh_pki.certificate_managed`.
     cert_params:
       all_principals: false
       backend: null
@@ -109,7 +146,7 @@ openssh:
         manage: true
         present: true
       # Whether to manage /etc/ssh/moduli. This formula currently does not support
-      # generating them, but it will pull the file from TOFS dirs as ``moduli``.
+      # generating them, but it will pull the file from TOFS dirs as `moduli`.
     moduli: false
       # Whether to ensure the server is running or dead by default.
     running: true

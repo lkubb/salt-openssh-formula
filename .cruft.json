@@ -60,6 +60,7 @@
         },
         "server": {
           "authorized_keys": {},
+          "authorized_principals": {},
           "cert_params": {
             "backend": null,
             "backend_args": null,
