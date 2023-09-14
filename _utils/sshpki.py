@@ -142,7 +142,8 @@ def build_crt(
         datetime.datetime.strptime(not_after, x509.TIME_FMT).timestamp()
         if not_after
         else (
-            datetime.datetime.utcnow() + datetime.timedelta(seconds=timestring_map(ttl))
+            datetime.datetime.utcnow()
+            + datetime.timedelta(seconds=timestring_map(ttl))
         ).timestamp()
     )
     builder = builder.valid_after(not_before).valid_before(not_after)
@@ -243,7 +244,7 @@ def load_file_or_bytes(fob):
     if not isinstance(fob, bytes):
         raise SaltInvocationError(
             "Could not load provided source. You need to pass an existing file, "
-            "(PEM|hex|base64)-encoded string or raw bytes."
+            "string or raw bytes."
         )
     return fob
 
@@ -313,7 +314,6 @@ def merge_signing_policy(policy, kwargs):
     default_ttl = timestring_map(policy.pop("ttl", None))
     max_ttl = timestring_map(policy.pop("max_ttl", default_ttl))
     requested_ttl = timestring_map(kwargs.pop("ttl", None))
-    requested_days_valid = kwargs.pop("days_valid", None)
 
     final_opts = default_opts
     for opt, optval in (kwargs.get("critical_options") or {}).items():
@@ -346,8 +346,6 @@ def merge_signing_policy(policy, kwargs):
         else:
             kwargs["valid_principals"] = default_principals
 
-    if requested_days_valid is not None and requested_ttl is None:
-        requested_ttl = timestring_map(f"{requested_days_valid}d")
     if requested_ttl is None:
         kwargs["ttl"] = default_ttl if default_ttl is not None else max_ttl
     elif max_ttl is not None:

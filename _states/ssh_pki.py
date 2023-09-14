@@ -2,6 +2,9 @@
 Manage OpenSSH certificates
 ===========================
 
+.. versionadded:: 3007.0
+
+
 :depends: cryptography
 
 Configuration instructions and general remarks are documented
@@ -12,18 +15,25 @@ About
 This module can enable managing a complete SSH PKI infrastructure, including creating
 private keys, CAs and certificates. It includes the ability to generate a
 private key on a server, and have the corresponding public key sent to a remote
-CA to create a CA signed certificate. This can be done in a secure manner, where
+CA to create a CA-signed certificate. This can be done in a secure manner, where
 private keys are always generated locally and never moved across the network.
+
+.. note::
+
+    In addition to the native Salt backend (the ``ssh_pki`` execution module),
+    you can have the state module call a different (compatible) execution module
+    using the ``backend`` parameter.
 
 Example
 -------
-Here is a simple example scenario. In this example ``ca`` is the ca server,
+Here is a simple example scenario. In this example, ``ca`` is the CA server
 and ``www`` is a web server that needs a certificate signed by ``ca``.
 
 .. note::
 
-    Remote signing requires the setup of :term:`Peer Communication` and signing
-    policies. Please see the :ref:`execution module docs <sshcert-setup>`.
+    Remote signing using the native Salt backend requires the setup of
+    :term:`Peer Communication` and signing policies. Please see the
+    :ref:`execution module docs <sshcert-setup>`.
 
 
 /srv/salt/top.sls
@@ -53,7 +63,7 @@ the public key to the mine, where it can be easily retrieved by other minions.
     Create CA private key:
       ssh_pki.private_key_managed:
         - name: /etc/pki/ssh/ca.key
-        - keysize: 4096
+        - algo: ed25519
         - backup: true
         - require:
           - file: /etc/pki/ssh/issued_certs
@@ -108,7 +118,7 @@ signed by our new CA. Mind that the specifics depend on the OS.
           - file: /etc/ssh/trusted-user-ca-keys.pem
 
 This state creates a private key to use as the host key, then requests
-a certificate signed by our CA according to the www policy and configures
+a certificate signed by our CA according to the ``www_host`` policy and configures
 the SSH server to use it.
 
 .. code-block:: yaml
@@ -118,14 +128,14 @@ the SSH server to use it.
     Create host private key:
       ssh_pki.private_key_managed:
         - name: /etc/ssh/ssh_host_rsa_key
-        - keysize: 4096
+        - algo: ed25519
         - backup: true
 
     Request certificate:
       ssh_pki.certificate_managed:
         - name: /etc/ssh/ssh_host_rsa_key.pub
         - ca_server: ca
-        - signing_policy: www
+        - signing_policy: www_host
         - private_key: /etc/ssh/ssh_host_rsa_key
         - backup: true
         - require:
@@ -146,7 +156,6 @@ import datetime
 import logging
 import os.path
 
-import salt.utils.context
 import salt.utils.files
 from salt.exceptions import CommandExecutionError, SaltInvocationError
 from salt.state import STATE_INTERNAL_KEYWORDS as _STATE_INTERNAL_KEYWORDS
@@ -215,7 +224,8 @@ def certificate_managed(
         Defaults to ``30d`` for host keys and ``1h`` for user keys.
 
     ca_server
-        Request a remotely signed certificate from ca_server. For this to
+        Request a remotely signed certificate from another minion acting as
+        a CA server via the ``ssh_pki`` execution module. For this to
         work, a ``signing_policy`` must be specified, and that same policy
         must be configured on the ca_server.  Also, the Salt master must
         permit peers to call the ``ssh_pki.sign_remote_certificate`` function.
@@ -236,22 +246,12 @@ def certificate_managed(
         otherwise optional.
 
     copypath
-        Create a copy of the issued certificate in PEM format in this directory.
-        The file will be named ``<serial_number>.crt`` if prepend_cn is false.
+        Create a copy of the issued certificate in this directory.
+        The file will be named ``<serial_number>.crt``.
 
     cert_type
-        The type of certificate to create. Either ``host`` or ``user``.
+        The certificate type to generate. Either ``user`` or ``host``.
         Required if not specified in the signing policy.
-
-    signing_private_key
-        The private key corresponding to the public key in ``signing_cert``. Required.
-
-    signing_private_key_passphrase
-        If ``signing_private_key`` is encrypted, the passphrase to decrypt it.
-
-    public_key
-        The public key the certificate should be issued for. Either this or
-        ``private_key`` is required.
 
     private_key
         The private key corresponding to the public key the certificate should
@@ -259,6 +259,16 @@ def certificate_managed(
 
     private_key_passphrase
         If ``private_key`` is specified and encrypted, the passphrase to decrypt it.
+
+    public_key
+        The public key the certificate should be issued for. Either this or
+        ``private_key`` is required.
+
+    signing_private_key
+        The private key of the CA that should be used to sign the certificate. Required.
+
+    signing_private_key_passphrase
+        If ``signing_private_key`` is encrypted, the passphrase to decrypt it.
 
     serial_number
         A serial number to be embedded in the certificate. If unspecified, will
@@ -311,14 +321,6 @@ def certificate_managed(
     verb = "create"
     backend = backend or "ssh_pki"
     backend_args = backend_args or {}
-
-    # This is supported by the x509 modules, provide a transparent translation
-    days_valid = kwargs.pop("days_valid", None)
-    if days_valid is not None and ttl is None:
-        ttl = days_valid * 86400
-    days_remaining = kwargs.pop("days_remaining", None)
-    if days_remaining is not None and ttl_remaining is None:
-        ttl_remaining = days_remaining * 86400
 
     file_args, unknown_args = _split_file_kwargs(_filter_state_internal_kwargs(kwargs))
     invalid_args = [key for key in unknown_args if not key.startswith("_")]
@@ -866,26 +868,9 @@ def _add_sub_state_run(ret, sub):
 def _file_managed(name, test=None, **kwargs):
     if test not in [None, True]:
         raise SaltInvocationError("test param can only be None or True")
-    # work around https://github.com/saltstack/salt/issues/62590
     test = test or __opts__["test"]
-    file_managed = __states__["file.managed"]
-    if test:
-        # calls via __salt__["state.single"](..., test=test)
-        # can overwrite __opts__["test"] permanently. Workaround:
-        opts = __opts__
-        if not __opts__["test"]:
-            opts = copy.copy(__opts__)
-            opts["test"] = test
-        with salt.utils.context.func_globals_inject(file_managed, __opts__=opts):
-            # The file execution module accesses __opts__["test"] as well
-            with salt.utils.context.func_globals_inject(
-                __salt__["file.check_perms"], __opts__=opts
-            ):
-                with salt.utils.context.func_globals_inject(
-                    __salt__["file.manage_file"], __opts__=opts
-                ):
-                    return file_managed(name, **kwargs)
-    return file_managed(name, **kwargs)
+    res = __salt__["state.single"]("file.managed", name, test=test, **kwargs)
+    return res[next(iter(res))]
 
 
 def _check_file_ret(fret, ret, current):
@@ -900,14 +885,15 @@ def _check_file_ret(fret, ret, current):
 
 
 def _build_cert(
-    ca_server=None,
-    backend=None,
-    backend_args=None,
-    signing_policy=None,
-    signing_private_key=None,
+    ca_server,
+    backend,
+    backend_args,
+    signing_policy,
+    signing_private_key,
     **kwargs,
 ):
     backend = backend or "ssh_pki"
+    skip_load_signing_private_key = False
     final_kwargs = copy.deepcopy(kwargs)
     sshpki.merge_signing_policy(
         __salt__[f"{backend}.get_signing_policy"](
@@ -916,17 +902,25 @@ def _build_cert(
         final_kwargs,
     )
     signing_pubkey = final_kwargs.pop("signing_public_key", None)
-    if ca_server is None:
+    if ca_server is None and backend == "ssh_pki":
+        if not signing_private_key:
+            raise SaltInvocationError(
+                "signing_private_key is required - this is most likely a bug"
+            )
         signing_pubkey = sshpki.load_privkey(
             signing_private_key, passphrase=kwargs.get("signing_private_key_passphrase")
         )
     elif signing_pubkey is None:
-        raise SaltInvocationError("The remote CA server did not deliver the CA pubkey")
+        raise SaltInvocationError(
+            "The remote CA server or backend module did not deliver the CA pubkey"
+        )
+    else:
+        skip_load_signing_private_key = True
 
     return (
         sshpki.build_crt(
             signing_private_key,
-            skip_load_signing_private_key=ca_server is not None,
+            skip_load_signing_private_key=skip_load_signing_private_key,
             **final_kwargs,
         ),
         signing_pubkey,
