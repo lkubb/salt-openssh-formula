@@ -311,6 +311,7 @@ def merge_signing_policy(policy, kwargs):
     )
     default_principals = policy.pop("default_valid_principals", allowed_principals)
 
+    # FIXME ensure max_ttl cannot be sidestepped by not_before/not_after !!
     default_ttl = timestring_map(policy.pop("ttl", None))
     max_ttl = timestring_map(policy.pop("max_ttl", default_ttl))
     requested_ttl = timestring_map(kwargs.pop("ttl", None))

@@ -378,7 +378,7 @@ def certificate_managed(
                         ttl_remaining if ttl_remaining is not None else 604800
                     )  # 7d
                 else:
-                    raise CommandExecutionError(f"Unknown cert_type: {current.thpe}")
+                    raise CommandExecutionError(f"Unknown cert_type: {current.type}")
                 if datetime.datetime.fromtimestamp(
                     current.valid_before
                 ) < datetime.datetime.utcnow() + datetime.timedelta(

@@ -136,6 +136,7 @@ except ImportError:
 
 import salt.utils.dictupdate
 import salt.utils.files
+import salt.utils.functools
 import salt.utils.stringutils
 from salt.exceptions import CommandExecutionError, SaltInvocationError
 
@@ -292,6 +293,9 @@ def create_certificate(
     with salt.utils.files.fopen(path, "wb") as fp_:
         fp_.write(out)
     return f"Certificate written to {path}"
+
+
+create_certificate_ssh = salt.utils.functools.alias_function(create_certificate, "create_certificate_ssh")
 
 
 def _create_certificate_remote(
