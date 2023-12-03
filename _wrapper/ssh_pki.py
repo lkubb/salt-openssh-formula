@@ -1,6 +1,31 @@
+"""
+Manage OpenSSH certificates
+===========================
+
+.. versionadded:: 3007.0
+
+:depends: cryptography
+
+Wraps the ``ssh_pki`` execution module for salt-ssh. This is required for
+remote signing via peer publishing.
+
+Additionally, this module provides a wrapper for ``ssh_pki.certificate_managed``
+analog to a sophisticated Jinja macro. This allows to statefully manage certificates,
+even if the certificate creation backend does not work on the managed remote.
+
+General configuration instructions and general remarks are documented
+in the :ref:`execution module docs <x509-setup>`.
+
+.. note::
+
+    The dependent modules must be present on the remote, they are not delivered
+    with the Salt-SSH thin tarball.
+    Operations with encrypted private keys additionally require the ``bcrypt``
+    Python module.
+"""
+import copy
 import logging
-import time
-import salt.daemons.masterapi
+
 from salt.exceptions import CommandExecutionError, SaltInvocationError
 
 try:
@@ -12,6 +37,14 @@ except ImportError:
 
 
 log = logging.getLogger(__name__)
+
+__virtualname__ = "ssh_pki"
+
+
+def __virtual__():
+    if not HAS_CRYPTOGRAPHY:
+        return (False, "Could not load cryptography")
+    return __virtualname__
 
 
 def create_certificate(
@@ -137,7 +170,7 @@ def create_certificate(
             )
         )
 
-    if path and not overwrite and __salt__["file.file_exists"](path):
+    if path and not overwrite and _check_ret(__salt__["file.file_exists"](path)):
         raise CommandExecutionError(
             f"The file at {path} exists and overwrite was set to false"
         )
@@ -182,10 +215,11 @@ def _create_certificate_remote(
 
 
 def _query_remote(ca_server, signing_policy, kwargs, get_signing_policy_only=False):
-    result = publish(
+    result = __salt__["publish.publish"](
         ca_server,
         "ssh_pki.sign_remote_certificate",
         arg=[signing_policy, kwargs, get_signing_policy_only],
+        regular_minions=True,
     )
 
     if not result:
@@ -215,165 +249,397 @@ def _check_ret(ret):
     return ret
 
 
-# The publish wrapper currently only publishes to SSH minions
-# TODO: Add this to the wrapper - ssh_minions=[bool] and regular_minions=[bool]
-def _publish(
-    tgt,
-    fun,
-    arg=None,
-    tgt_type="glob",
-    returner="",
-    timeout=5,
-    form="clean",
-    wait=False,
-    via_master=None,
-):
-    masterapi = salt.daemons.masterapi.RemoteFuncs(__opts__["__master_opts__"])
-
-    log.info("Publishing '%s'", fun)
-    load = {
-        "cmd": "minion_pub",
-        "fun": fun,
-        "arg": arg,
-        "tgt": tgt,
-        "tgt_type": tgt_type,
-        "ret": returner,
-        "tmo": timeout,
-        "form": form,
-        "id": __opts__["id"],
-        "no_parse": __opts__.get("no_parse", []),
-    }
-    peer_data = masterapi.minion_pub(load)
-    if not peer_data:
-        return {}
-    # CLI args are passed as strings, re-cast to keep time.sleep happy
-    if wait:
-        loop_interval = 0.3
-        matched_minions = set(peer_data["minions"])
-        returned_minions = set()
-        loop_counter = 0
-        while returned_minions ^ matched_minions:
-            load = {
-                "cmd": "pub_ret",
-                "id": __opts__["id"],
-                "jid": peer_data["jid"],
-            }
-            ret = masterapi.pub_ret(load)
-            returned_minions = set(ret.keys())
-
-            end_loop = False
-            if returned_minions >= matched_minions:
-                end_loop = True
-            elif (loop_interval * loop_counter) > timeout:
-                if not returned_minions:
-                    return {}
-                end_loop = True
-
-            if end_loop:
-                if form == "clean":
-                    cret = {}
-                    for host in ret:
-                        cret[host] = ret[host]["ret"]
-                    return cret
-                else:
-                    return ret
-            loop_counter = loop_counter + 1
-            time.sleep(loop_interval)
-    else:
-        time.sleep(float(timeout))
-        load = {
-            "cmd": "pub_ret",
-            "id": __opts__["id"],
-            "jid": peer_data["jid"],
-        }
-        ret = masterapi.pub_ret(load)
-        if form == "clean":
-            cret = {}
-            for host in ret:
-                cret[host] = ret[host]["ret"]
-            return cret
-        else:
-            return ret
-    return ret
-
-
-def publish(
-    tgt, fun, arg=None, tgt_type="glob", returner="", timeout=5, via_master=None
-):
+def get_signing_policy(signing_policy, ca_server=None):
     """
-    Publish a command from the minion out to other minions.
-
-    Publications need to be enabled on the Salt master and the minion
-    needs to have permission to publish the command. The Salt master
-    will also prevent a recursive publication loop, this means that a
-    minion cannot command another minion to command another minion as
-    that would create an infinite command loop.
-
-    The ``tgt_type`` argument is used to pass a target other than a glob into
-    the execution, the available options are:
-
-    - glob
-    - pcre
-    - grain
-    - grain_pcre
-    - pillar
-    - pillar_pcre
-    - ipcidr
-    - range
-    - compound
-
-    .. versionchanged:: 2017.7.0
-        The ``expr_form`` argument has been renamed to ``tgt_type``, earlier
-        releases must use ``expr_form``.
-
-    Note that for pillar matches must be exact, both in the pillar matcher
-    and the compound matcher. No globbing is supported.
-
-    The arguments sent to the minion publish function are separated with
-    commas. This means that for a minion executing a command with multiple
-    args it will look like this:
-
-    .. code-block:: bash
-
-        salt system.example.com publish.publish '*' user.add 'foo,1020,1020'
-        salt system.example.com publish.publish 'os:Fedora' network.interfaces '' grain
+    Returns the specified named signing policy.
 
     CLI Example:
 
     .. code-block:: bash
 
-        salt system.example.com publish.publish '*' cmd.run 'ls -la /tmp'
+        salt '*' ssh_pki.get_signing_policy www
 
+    signing_policy
+        The name of the signing policy to return.
 
-    .. admonition:: Attention
-
-        If you need to pass a value to a function argument and that value
-        contains an equal sign, you **must** include the argument name.
-        For example:
-
-        .. code-block:: bash
-
-            salt '*' publish.publish test.kwarg arg='cheese=spam'
-
-        Multiple keyword arguments should be passed as a list.
-
-        .. code-block:: bash
-
-            salt '*' publish.publish test.kwarg arg="['cheese=spam','spam=cheese']"
-
-
-    When running via salt-call, the `via_master` flag may be set to specific which
-    master the publication should be sent to. Only one master may be specified. If
-    unset, the publication will be sent only to the first master in minion configuration.
+    ca_server
+        If this is set, the CA server will be queried for the
+        signing policy instead of looking it up locally.
     """
-    return _publish(
-        tgt,
-        fun,
-        arg=arg,
-        tgt_type=tgt_type,
-        returner=returner,
-        timeout=timeout,
-        form="clean",
-        wait=True,
-        via_master=via_master,
-    )
+    if ca_server is None:
+        return _get_signing_policy(signing_policy)
+    # Cache signing policies from remote during this run
+    # to reduce unnecessary resource usage.
+    ckey = "_ssh_pki_policies"
+    if ckey not in __context__:
+        __context__[ckey] = {}
+    if ca_server not in __context__[ckey]:
+        __context__[ckey][ca_server] = {}
+    if signing_policy not in __context__[ckey][ca_server]:
+        policy_ = _query_remote(
+            ca_server, signing_policy, {}, get_signing_policy_only=True
+        )
+        __context__[ckey][ca_server][signing_policy] = policy_
+    # only hand out copies of the cached policy
+    return copy.deepcopy(__context__[ckey][ca_server][signing_policy])
+
+
+def _get_signing_policy(name):
+    if name is None:
+        return {}
+    policies = __salt__["pillar.get"]("ssh_signing_policies", {}).get(name)
+    policies = policies or __salt__["config.get"]("ssh_signing_policies", {}).get(name)
+    return policies or {}
+
+
+def certificate_managed_wrapper(
+    name,
+    ca_server,
+    signing_policy,
+    backend=None,
+    backend_args=None,
+    private_key_managed=None,
+    private_key=None,
+    private_key_passphrase=None,
+    public_key=None,
+    certificate_managed=None,
+    test=None,
+):
+    """
+    This function essentially behaves like a sophisticated Jinja macro.
+    It is intended to provide a replacement for the ``ssh_pki.certificate_managed``
+    state with peer publishing or some backends, which does not work via salt-ssh.
+    It performs necessary checks during rendering and returns an appropriate
+    highstate structure that does work via salt-ssh (if a certificate needs to be
+    reissued, it is done during rendering and the actual state just manages the file).
+
+    Required arguments are ``name``, ``ca_server`` and ``signing_policy``.
+    If you want this function to manage a private key, it should be specified
+    in ``private_key_managed``, which should contain all arguments to the
+    respective state. Note that the private key will not be checked for changes.
+    If you want to use a public key as a source, it must exist during state
+    rendering and you cannot manage a private key.
+
+    All optional keyword arguments to ``certificate_managed`` can be specified
+    in the dict param ``certificate_managed``.
+    Key rotation can be activated by including ``new: true`` in the dict for
+    ``private_key_managed``.
+
+    As an example, for Jinja templates, you can serialize this function's output
+    directly into the state file. Note that you need to pass ``opts.get("test")``
+    explicitly for test mode to work reliably!
+
+    .. code-block:: jinja
+
+        {%- set private_key_params = {
+                "name": "/root/.ssh/id_foo",
+                "algo": "ed25519",
+                "new": true
+        } %}
+        {%- set certificate_params = {
+                "ttl_remaining": "7d",
+                "ttl": "30d",
+                "valid_principals": ["min.ion.example.org"]
+        } %}
+        {{
+            salt["ssh_pki.certificate_managed_wrapper"](
+                "/root/.ssh/id_foo.crt",
+                ca_server="ca_minion",
+                signing_policy="user_cert",
+                private_key_managed=private_key_params,
+                certificate_managed=certificate_params,
+                test=opts.get("test")
+            ) | yaml(false)
+        }}
+
+
+    name
+        The path of the certificate to manage.
+
+    ca_server
+        The CA server to contact. This is required since this function
+        is not necessary for locally signed certificates.
+
+    signing_policy
+        The name of the signing policy to use. Required since remotely
+        signing a certificate requires a policy.
+
+    backend
+        Instead of using the ``ssh_pki`` execution module for certificate
+        creation, use this backend. It must provide a compatible API for
+        ``create_certificate`` and ``get_signing_policy``.
+        It should have a wrapper module for this function to make sense,
+        otherwise you can just use the state module directly.
+
+    backend_args
+        If ``backend`` is specified, pass these additional keyword arguments
+        to it. Must be a mapping (dict).
+
+    private_key_managed
+        A dictionary of keyword arguments to ``ssh_pki.private_key_managed``.
+        This is required if ``private_key`` or ``public_key``
+        have not been specified.
+        Key rotation will be performed automatically if ``new: true``.
+
+    private_key
+        The path of a private key to use for public key derivation
+        (it will not be managed).
+        Does not accept the key itself. Mutually exclusive with
+        ``private_key_managed`` and ``public_key``.
+
+    private_key_passphrase
+        If the specified private key needs a passphrase, specify it here.
+
+    public_key
+        The path of a public key to use.
+        Does not accept the key itself. Mutually exclusive with
+        ``private_key_managed`` and ``private_key``.
+
+    certificate_managed
+        A dictionary of keyword arguments to ``ssh_pki.certificate_managed``.
+
+    test
+        Run in test mode. This should be passed explicitly because the value
+        is not loaded into wrapper modules (reliably?). Pass it like
+        ``test=opts.get("test")``.
+        If this is forgotten, the files on the remote will still not be updated,
+        but a certificate might be issued unnecessarily.
+
+    .. note::
+
+        This function does not claim feature parity, but it uses the same
+        change check as the regular state module. Special handling for symlinks
+        and other edge cases is not implemented.
+
+        There will be one or two resulting states, depending on the presence of
+        ``private_key_managed``. Both states will have the managed file path as
+        their state ID (suffixed with either _key or _crt), the state module
+        will always be ``ssh_pki``.
+
+        Private keys will not leave the remote machine.
+    """
+    if not (private_key_managed or private_key or public_key):
+        raise SaltInvocationError(
+            "Need to specify either private_key_managed, private_key or public_key"
+        )
+
+    backend = backend or "ssh_pki"
+    create_private_key = False
+    recreate_private_key = False
+    new_certificate = False
+    certificate_managed = certificate_managed or {}
+    private_key_managed = private_key_managed or {}
+    public_key = None
+
+    cert_file_args, cert_args = sshpki.split_file_kwargs(certificate_managed)
+    pk_file_args, pk_args = sshpki.split_file_kwargs(private_key_managed)
+    ret = {}
+    current = None
+    cert_changes = {}
+    pk_temp_file = None
+
+    try:
+        # Check if we have a source for a public key
+        if pk_args:
+            private_key = pk_args["name"]
+            if not _check_ret(__salt__["file.file_exists"](private_key)):
+                create_private_key = True
+            else:
+                public_key = _check_ret(
+                    __salt__["ssh_pki.get_public_key"](
+                        pk_args["name"],
+                        pk_args.get("passphrase"),
+                    )
+                )
+        elif private_key:
+            if not _check_ret(__salt__["file.file_exists"](private_key)):
+                raise SaltInvocationError("Specified private key does not exist")
+            public_key = _check_ret(
+                __salt__["ssh_pki.get_public_key"](private_key, private_key_passphrase)
+            )
+        elif public_key:
+            # todo usually can be specified as the key itself
+            if not _check_ret(__salt__["file.file_exists"](public_key)):
+                raise SaltInvocationError("Specified public key does not exist")
+            public_key = _check_ret(__salt__["ssh_pki.get_public_key"](public_key))
+
+        if create_private_key:
+            # A missing private key means we need to create a certificate regardless
+            new_certificate = True
+        elif not _check_ret(__salt__["file.file_exists"](name)):
+            new_certificate = True
+        else:
+            # We check the certificate the same way the state does
+            crt = _check_ret(__salt__["file.read"](name))
+            signing_policy_contents = _check_ret(
+                __salt__[f"{backend}.get_signing_policy"](
+                    signing_policy, ca_server=ca_server, **(backend_args or {})
+                )
+            )
+            current, cert_changes, replace = sshpki.check_cert_changes(
+                crt,
+                **cert_args,
+                ca_server=ca_server,
+                signing_policy_contents=signing_policy_contents,
+                backend=backend,
+                public_key=public_key,
+            )
+            new_certificate = new_certificate or replace
+
+        if pk_args and pk_args.get("new") and not create_private_key:
+            if new_certificate or cert_changes:
+                recreate_private_key = True
+
+        if test or __opts__.get("test"):
+            if pk_args:
+                pk_ret = {
+                    "name": pk_args["name"],
+                    "result": True,
+                    "comment": "The private key is in the correct state",
+                    "changes": {},
+                    "require_in": [
+                        name + "_crt",
+                    ],
+                }
+                if create_private_key or recreate_private_key:
+                    pp = "created" if not recreate_private_key else "recreated"
+                    pk_ret["changes"][pp] = pk_args["name"]
+                    pk_ret["comment"] = f"The private key would have been {pp}"
+                ret[pk_args["name"] + "_key"] = {
+                    "ssh_pki.private_key_managed_ssh": [
+                        {k: v} for k, v in pk_ret.items()
+                    ]
+                }
+                ret[pk_args["name"] + "_key"]["ssh_pki.private_key_managed_ssh"].extend(
+                    {k: v} for k, v in pk_file_args.items()
+                )
+
+            cert_ret = {
+                "name": name,
+                "result": True,
+                "changes": {},
+            }
+            if new_certificate:
+                pp = ("re" if current else "") + "created"
+                cert_ret["comment"] = f"The certificate would have been {pp}"
+                cert_ret["changes"][pp] = name
+            elif cert_changes:
+                cert_ret["comment"] = "The certificate would have been updated"
+                cert_ret["changes"] = cert_changes
+            else:
+                cert_ret["comment"] = "The certificate is in the correct state"
+                cert_ret["changes"] = {}
+
+            ret[name + "_crt"] = {
+                "ssh_pki.certificate_managed_ssh": [{k: v} for k, v in cert_ret.items()]
+            }
+            ret[name + "_crt"]["ssh_pki.certificate_managed_ssh"].extend(
+                {k: v} for k, v in cert_file_args.items()
+            )
+            return ret
+
+        if create_private_key or recreate_private_key:
+            pk_temp_file = _check_ret(__salt__["temp.file"]())
+            _check_ret(__salt__["file.set_mode"](pk_temp_file, "0600"))
+            cpk_args = {"path": pk_temp_file, "overwrite": True}
+            for arg in (
+                "algo",
+                "keysize",
+                "passphrase",
+            ):
+                if arg in pk_args:
+                    cpk_args[arg] = pk_args[arg]
+            _check_ret(__salt__["ssh_pki.create_private_key"](**cpk_args))
+            public_key = _check_ret(
+                __salt__["ssh_pki.get_public_key"](
+                    pk_temp_file, pk_args.get("passphrase")
+                )
+            )
+        if pk_args:
+            pk_ret = {
+                "name": pk_args["name"],
+                "result": True,
+                "comment": "The private key is in the correct state",
+                "changes": {},
+                "require_in": [
+                    name + "_crt",
+                ],
+            }
+            if create_private_key or recreate_private_key:
+                pp = "created" if not recreate_private_key else "recreated"
+                pk_ret["changes"][pp] = pk_args["name"]
+                pk_ret["comment"] = f"The private key has been {pp}"
+            ret[pk_args["name"] + "_key"] = {
+                "ssh_pki.private_key_managed_ssh": [{k: v} for k, v in pk_ret.items()]
+            }
+            ret[pk_args["name"] + "_key"]["ssh_pki.private_key_managed_ssh"].extend(
+                {k: v} for k, v in pk_file_args.items()
+            )
+            ret[pk_args["name"] + "_key"]["ssh_pki.private_key_managed_ssh"].append(
+                {"tempfile": pk_temp_file}
+            )
+
+        cert_ret = {
+            "name": name,
+            "result": True,
+            "changes": {},
+        }
+        if new_certificate or cert_changes:
+            pp = ("re" if current else "") + "created"
+            cert_ret["contents"] = _check_ret(
+                __salt__[f"{backend}.create_certificate"](
+                    **_filter_cert_managed_state_args(cert_args),
+                    **(backend_args or {}),
+                    ca_server=ca_server,
+                    signing_policy=signing_policy,
+                    public_key=public_key,
+                )
+            )
+            cert_ret["comment"] = f"The certificate has been {pp}"
+            if not cert_changes:
+                cert_ret["changes"][pp] = name
+            else:
+                cert_ret["changes"] = cert_changes
+        else:
+            cert_ret["comment"] = "The certificate is in the correct state"
+            cert_ret["changes"] = {}
+
+        ret[name + "_crt"] = {
+            "ssh_pki.certificate_managed_ssh": [{k: v} for k, v in cert_ret.items()]
+        }
+        ret[name + "_crt"]["ssh_pki.certificate_managed_ssh"].append(
+            {k: v} for k, v in cert_file_args.items()
+        )
+    except (CommandExecutionError, SaltInvocationError) as err:
+        if pk_temp_file:
+            if _check_ret(__salt__["file.file_exists"](pk_temp_file)):
+                try:
+                    # otherwise, get rid of it
+                    _check_ret(__salt__["file.remove"](pk_temp_file))
+                except Exception as err:  # pylint: disable=broad-except
+                    log.error(str(err), exc_info_on_loglevel=logging.DEBUG)
+        ret = {
+            name
+            + "_crt": {
+                "ssh_pki.certificate_managed_ssh": [
+                    {"name": name},
+                    {"result": False},
+                    {"comment": str(err)},
+                    {"changes": {}},
+                ]
+            }
+        }
+        if pk_args and "name" in pk_args:
+            ret[pk_args["name"] + "_key"] = {
+                "ssh_pki.private_key_managed_ssh": [
+                    {"name": pk_args["name"]},
+                    {"result": False},
+                    {"comment": str(err)},
+                    {"changes": {}},
+                ]
+            }
+    return ret
+
+
+def _filter_cert_managed_state_args(kwargs):
+    return {k: v for k, v in kwargs.items() if k != "ttl_remaining"}

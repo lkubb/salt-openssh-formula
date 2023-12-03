@@ -124,7 +124,6 @@ import logging
 import os.path
 
 try:
-    from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
     from cryptography.hazmat.primitives import hashes, serialization
 
     import salt.utils.x509 as x509util
@@ -295,7 +294,9 @@ def create_certificate(
     return f"Certificate written to {path}"
 
 
-create_certificate_ssh = salt.utils.functools.alias_function(create_certificate, "create_certificate_ssh")
+create_certificate_ssh = salt.utils.functools.alias_function(
+    create_certificate, "create_certificate_ssh"
+)
 
 
 def _create_certificate_remote(
@@ -306,9 +307,9 @@ def _create_certificate_remote(
         private_key_loaded = sshpki.load_privkey(
             private_key, passphrase=private_key_passphrase
         )
-        kwargs["public_key"] = _encode_public_key(private_key_loaded.public_key())
+        kwargs["public_key"] = sshpki.encode_public_key(private_key_loaded.public_key())
     elif kwargs.get("public_key"):
-        kwargs["public_key"] = _encode_public_key(
+        kwargs["public_key"] = sshpki.encode_public_key(
             sshpki.load_pubkey(kwargs["public_key"])
         )
 
@@ -369,7 +370,7 @@ def create_private_key(
 
     path
         Instead of returning the private key, write it to this file path.
-        Note that this does not use safe permissions and should be avoided.
+        The file will be written with ``0600`` permissions if it does not exist.
 
     pubkey_suffix
         If ``path`` is specified, write the corresponding pubkey to the same path
@@ -404,8 +405,7 @@ def create_private_key(
             "public_key": get_public_key(out, passphrase=passphrase),
         }
 
-    with salt.utils.files.fopen(path, "wb") as fp_:
-        fp_.write(out.encode())
+    sshpki.safe_atomic_write(path, out)
     return f"Private key written to {path}"
 
 
@@ -526,23 +526,7 @@ def get_public_key(key, passphrase=None):
     passphrase
         If ``key`` is encrypted, the passphrase to decrypt it.
     """
-    try:
-        return _encode_public_key(sshpki.load_pubkey(key)).decode()
-    except (CommandExecutionError, SaltInvocationError, UnsupportedAlgorithm):
-        pass
-    try:
-        return _encode_public_key(sshpki.load_cert(key).public_key()).decode()
-    except (CommandExecutionError, SaltInvocationError, UnsupportedAlgorithm):
-        pass
-    try:
-        return _encode_public_key(
-            sshpki.load_privkey(key, passphrase=passphrase).public_key()
-        ).decode()
-    except (CommandExecutionError, SaltInvocationError, UnsupportedAlgorithm):
-        pass
-    raise CommandExecutionError(
-        "Could not load key as certificate, public key or private key"
-    )
+    return sshpki.get_public_key(key, passphrase=passphrase)
 
 
 def get_signing_policy(signing_policy, ca_server=None):
@@ -610,14 +594,14 @@ def read_certificate(certificate):
         "key_size": cert.public_key().key_size if key_type in ["ec", "rsa"] else None,
         "key_type": key_type,
         "serial_number": x509util.dec2hex(cert.serial),
-        "issuer_public_key": _encode_public_key(cert.signature_key()).decode(),
+        "issuer_public_key": sshpki.encode_public_key(cert.signature_key()).decode(),
         "not_before": datetime.datetime.fromtimestamp(
             cert.valid_after, tz=datetime.timezone.utc
         ).strftime(x509util.TIME_FMT),
         "not_after": datetime.datetime.fromtimestamp(
             cert.valid_before, tz=datetime.timezone.utc
         ).strftime(x509util.TIME_FMT),
-        "public_key": _encode_public_key(cert.public_key()).decode(),
+        "public_key": sshpki.encode_public_key(cert.public_key()).decode(),
         "critical_options": _parse_options(cert),
         "extensions": _parse_extensions(cert),
     }
@@ -705,7 +689,7 @@ def sign_remote_certificate(
                     ret["data"] = None
                     ret["errors"].append(str(err))
                     return ret
-                signing_policy["signing_public_key"] = _encode_public_key(
+                signing_policy["signing_public_key"] = sshpki.encode_public_key(
                     signing_private_key.public_key()
                 )
             ret["data"] = signing_policy
@@ -808,15 +792,11 @@ def verify_signature(certificate, signing_pub_key, signing_pub_key_passphrase=No
     signing_pub_key_passphrase
         If ``signing_pub_key`` is encrypted, the passphrase to decrypt it.
     """
-    cert = sshpki.load_cert(certificate, verify=False)
-    pubkey = sshpki.load_pubkey(
-        get_public_key(signing_pub_key, passphrase=signing_pub_key_passphrase)
+    return sshpki.verify_signature(
+        certificate,
+        signing_pub_key,
+        signing_pub_key_passphrase=signing_pub_key_passphrase,
     )
-    try:
-        cert.verify_cert_signature()
-    except InvalidSignature:
-        return False
-    return x509util.match_pubkey(cert.signature_key(), pubkey)
 
 
 def _generate_pk(algo="rsa", keysize=None):
@@ -880,10 +860,3 @@ def _match_minions(test, minion):
         # The following line should never be reached.
         return False
     return __salt__["match.glob"](test, minion)
-
-
-def _encode_public_key(public_key):
-    return public_key.public_bytes(
-        encoding=serialization.Encoding.OpenSSH,
-        format=serialization.PublicFormat.OpenSSH,
-    )
