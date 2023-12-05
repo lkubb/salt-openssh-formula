@@ -571,6 +571,14 @@ def load_privkey(pk, passphrase=None):
             ) from err
         if "Corrupt data: broken checksum" in str(err):
             raise SaltInvocationError("Bad decrypt - is the password correct?") from err
+        if "Not OpenSSH private key format" in str(err):
+            # Earlier, OpenSSH private keys were serialized into OpenSSL-
+            # compatible formats, so let's try to load keys this way as well.
+            # We don't support serialization to the format though.
+            try:
+                return x509.load_privkey(pk, passphrase=passphrase)
+            except Exception as err:  # pylint: disable=broad-except
+                log.debug(f"Failed loading as OpenSSL private key: {err}")
         raise CommandExecutionError("Could not load OpenSSH private key") from err
 
 
