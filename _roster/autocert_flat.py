@@ -93,13 +93,13 @@ All configuration values with defaults:
 #       last rotation time to cache. It could be implemented using test=true,
 #       check its performance to determine if the tradeoff is worth it.
 
+import copy
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import salt.config
 import salt.loader
-import salt.utils.context
+import salt.minion
 import salt.utils.dictupdate as dup
 import salt.utils.json
 from salt.exceptions import CommandExecutionError
@@ -142,71 +142,68 @@ def targets(tgt, tgt_type="glob", **kwargs):
     res = {}
     roster_config = __opts__.get("autocert_roster", {})
     forced = roster_config.get("force", False)
-    manage = __runner__["state.orchestrate_single"]
     basedir = Path(__opts__["pki_dir"]) / "ssh" / "autocert"
-    # We need to patch in __jid_event__ because it is not set otherwise
-    with salt.utils.context.func_globals_inject(manage, __jid_event__=MagicMock()):
-        for host, config in matches.items():
-            try:
-                if "cert" not in config:
-                    if not forced:
-                        res[host] = config
-                        continue
-                    config["cert"] = {}
-                final_config = dup.merge(roster_config.get("default", {}), config)
-                if "priv" not in final_config:
-                    final_config["priv"] = basedir / host
-                priv = Path(final_config["priv"])
-                if not priv.is_absolute():
-                    priv = basedir / priv
-                    final_config["priv"] = str(priv)
-                if not priv.exists():
-                    keysize = None
-                    algo = (
-                        final_config["cert"]
-                        .get("private_key", {})
-                        .get("algo", "ed25519")
+    for host, config in matches.items():
+        try:
+            if "cert" not in config:
+                if not forced:
+                    res[host] = config
+                    continue
+                config["cert"] = {}
+            final_config = dup.merge(roster_config.get("default", {}), config)
+            if "priv" not in final_config:
+                final_config["priv"] = basedir / host
+            priv = Path(final_config["priv"])
+            if not priv.is_absolute():
+                priv = basedir / priv
+                final_config["priv"] = str(priv)
+            if not priv.exists():
+                keysize = None
+                algo = (
+                    final_config["cert"]
+                    .get("private_key", {})
+                    .get("algo", "ed25519")
+                )
+                if algo in ["rsa", "ec"]:
+                    keysize = final_config["cert"].get(
+                        "keysize", 2048 if algo == "rsa" else 256
                     )
-                    if algo in ["rsa", "ec"]:
-                        keysize = final_config["cert"].get(
-                            "keysize", 2048 if algo == "rsa" else 256
-                        )
-                    _check_ret(
-                        manage(
-                            "ssh_pki.private_key_managed",
-                            name=str(priv),
-                            makedirs=True,
-                            mode="0600",
-                            dir_mode="0700",
-                            algo=algo,
-                            keysize=keysize,
-                            overwrite=True,
-                        )
-                    )
-                cert = priv.with_suffix(".crt")
                 _check_ret(
-                    manage(
-                        "ssh_pki.certificate_managed",
-                        name=str(cert),
-                        **final_config["cert"].get("cert_args", {}),
-                        cert_type="user",
-                        mode="0644",
+                    _manage(
+                        "ssh_pki.private_key_managed",
+                        name=str(priv),
+                        makedirs=True,
+                        mode="0600",
                         dir_mode="0700",
-                        private_key=str(priv),
+                        algo=algo,
+                        keysize=keysize,
+                        overwrite=True,
                     )
                 )
-                if "ssh_options" not in final_config:
-                    final_config["ssh_options"] = []
-                else:
-                    final_config["ssh_options"] = [
-                        x
-                        for x in final_config["ssh_options"]
-                        if "CertificateFile" not in x
-                    ]
-                final_config["ssh_options"].append(f"CertificateFile={cert}")
-                res[host] = final_config
-            except CommandExecutionError as err:
-                log.error(f"Autocert roster failed for host '{host}': {err}")
+            cert = priv.with_suffix(".crt")
+            _check_ret(
+                _manage(
+                    "ssh_pki.certificate_managed",
+                    name=str(cert),
+                    **final_config["cert"].get("cert_args", {}),
+                    cert_type="user",
+                    mode="0644",
+                    dir_mode="0700",
+                    private_key=str(priv),
+                )
+            )
+            if "ssh_options" not in final_config:
+                final_config["ssh_options"] = []
+            else:
+                final_config["ssh_options"] = [
+                    x
+                    for x in final_config["ssh_options"]
+                    if "CertificateFile" not in x
+                ]
+            final_config["ssh_options"].append(f"CertificateFile={cert}")
+            res[host] = final_config
+        except CommandExecutionError as err:
+            log.error(f"Autocert roster failed for host '{host}': {err}")
     return res
 
 
@@ -230,3 +227,19 @@ def _check_ret(ret):
         )
     if not res["result"]:
         raise CommandExecutionError(res["comment"])
+
+
+def _manage(fun, name, **kwargs):
+    """
+    Stripped down variant of runners.state.orchestrate_single -
+    it tries to access __jid_event__, which is unset when called
+    from here and patching it in is hacky and does not work reliably.
+    """
+    opts = copy.deepcopy(__opts__)
+    opts["file_client"] = "local"
+    minion = salt.minion.MasterMinion(opts)
+    running = minion.functions["state.single"](
+        fun, name, test=None, queue=False, **kwargs
+    )
+    ret = {minion.opts["id"]: running}
+    return ret
