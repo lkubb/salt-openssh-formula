@@ -20,7 +20,7 @@ Wanted authorized keys for user {{ user }} are absent:
 {%-     endif %}
 {%-   else %}
 
-Authorized keys for user {{ user }} are present:
+Wanted authorized keys for user {{ user }} are absent:
   ssh_auth.absent:
     - names: {{ config.get("keys", []) | json }}
     - user: {{ user }}
