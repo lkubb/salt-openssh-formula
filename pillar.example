@@ -141,6 +141,9 @@ openssh:
         present: true
           # Whether to generate a host certificate. Defaults to false.
         cert: false
+          # Whether to rotate the private key when generating a fresh cert.
+          # Defaults to true.
+        rotate: true
           # You can override the default key size for rsa/ecdsa.
         key_size: 521
       ed25519:

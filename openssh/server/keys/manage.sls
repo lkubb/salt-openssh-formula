@@ -31,7 +31,7 @@ OpenSSH {{ key_type }} host key is absent:
         "user": "root",
         "group": "root",
         "mode": "0600",
-        "new": config.get("cert") | to_bool
+        "new": config.get("cert") and config.get("rotate", true) | to_bool
       }
 %}
 {%-   if cli in ["ssh", "unknown"] and config.get("cert") and openssh.server.cert_params.ca_server %}
