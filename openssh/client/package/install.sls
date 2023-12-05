@@ -6,4 +6,4 @@
 OpenSSH client is installed:
   pkg.installed:
     - name: {{ openssh.lookup.pkg.client }}
-    - version: {{ openssh.client.version }}
+    - version: {{ openssh.client.version | json }}

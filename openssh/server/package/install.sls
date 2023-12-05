@@ -6,4 +6,4 @@
 OpenSSH server is installed:
   pkg.installed:
     - name: {{ openssh.lookup.pkg.server }}
-    - version: {{ openssh.server.version }}
+    - version: {{ openssh.server.version | json }}
