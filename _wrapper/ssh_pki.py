@@ -483,20 +483,28 @@ def certificate_managed_wrapper(
         else:
             # We check the certificate the same way the state does
             crt = _check_ret(__salt__["file.read"](name))
-            signing_policy_contents = _check_ret(
-                __salt__[f"{backend}.get_signing_policy"](
-                    signing_policy, ca_server=ca_server, **(backend_args or {})
+            try:
+                crt = sshpki.load_cert(crt)
+            except SaltInvocationError as err:
+                # When a public key is changed to a certificate, this happens
+                if "decoded to a" not in str(err):
+                    raise
+                new_certificate = True
+            else:
+                signing_policy_contents = _check_ret(
+                    __salt__[f"{backend}.get_signing_policy"](
+                        signing_policy, ca_server=ca_server, **(backend_args or {})
+                    )
                 )
-            )
-            current, cert_changes, replace = sshpki.check_cert_changes(
-                crt,
-                **cert_args,
-                ca_server=ca_server,
-                signing_policy_contents=signing_policy_contents,
-                backend=backend,
-                public_key=public_key,
-            )
-            new_certificate = new_certificate or replace
+                current, cert_changes, replace = sshpki.check_cert_changes(
+                    crt,
+                    **cert_args,
+                    ca_server=ca_server,
+                    signing_policy_contents=signing_policy_contents,
+                    backend=backend,
+                    public_key=public_key,
+                )
+                new_certificate = new_certificate or replace
 
         if pk_args and pk_args.get("new") and not create_private_key:
             if new_certificate or cert_changes:
