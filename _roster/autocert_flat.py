@@ -93,8 +93,9 @@ All configuration values with defaults:
 #       last rotation time to cache. It could be implemented using test=true,
 #       check its performance to determine if the tradeoff is worth it.
 
-import copy
+import json
 import logging
+import subprocess
 from pathlib import Path
 
 import salt.config
@@ -105,7 +106,6 @@ import salt.utils.json
 from salt.exceptions import CommandExecutionError
 from salt.roster import get_roster_file
 from salt.template import compile_template
-
 
 log = logging.getLogger(__name__)
 
@@ -160,9 +160,7 @@ def targets(tgt, tgt_type="glob", **kwargs):
             if not priv.exists():
                 keysize = None
                 algo = (
-                    final_config["cert"]
-                    .get("private_key", {})
-                    .get("algo", "ed25519")
+                    final_config["cert"].get("private_key", {}).get("algo", "ed25519")
                 )
                 if algo in ["rsa", "ec"]:
                     keysize = final_config["cert"].get(
@@ -196,9 +194,7 @@ def targets(tgt, tgt_type="glob", **kwargs):
                 final_config["ssh_options"] = []
             else:
                 final_config["ssh_options"] = [
-                    x
-                    for x in final_config["ssh_options"]
-                    if "CertificateFile" not in x
+                    x for x in final_config["ssh_options"] if "CertificateFile" not in x
                 ]
             final_config["ssh_options"].append(f"CertificateFile={cert}")
             res[host] = final_config
@@ -231,15 +227,28 @@ def _check_ret(ret):
 
 def _manage(fun, name, **kwargs):
     """
-    Stripped down variant of runners.state.orchestrate_single -
-    it tries to access __jid_event__, which is unset when called
-    from here and patching it in is hacky and does not work reliably.
+    Uses a subprocess to manage a certificate using ``ssh_pki.certificate_managed``.
     """
-    opts = copy.deepcopy(__opts__)
-    opts["file_client"] = "local"
-    minion = salt.minion.MasterMinion(opts)
-    running = minion.functions["state.single"](
-        fun, name, test=None, queue=False, **kwargs
-    )
-    ret = {minion.opts["id"]: running}
-    return ret
+    # Either I'm missing something, or it's next to impossible to call
+    # Salt with different opts using the same interpreter without breaking something.
+    # Tried:
+    # * runner state.orchestrate_single - fails with missing __jid_event__
+    # * MasterMinion + state.single - leaks wrong opts into state rendering
+    # * salt-run state.orchestrate_single - invalid JSON + weakly referenced
+    #   __jid_event__ issue
+    # Probably works:
+    # * Duplicating ssh_pki.certificate_managed in here
+    # For now, just use a subprocess to do the management. This might incur
+    # a lot of overhead though.
+    cmd = [
+        "salt-run",
+        "--out",
+        "json",
+        "-l",
+        "quiet",
+        "salt.cmd",
+        "state.single",
+        fun,
+        name,
+    ] + [f"{k}={json.dumps(v)}" for k, v in kwargs.items()]
+    return {"local": json.loads(subprocess.check_output(cmd))}
