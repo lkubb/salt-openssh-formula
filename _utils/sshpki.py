@@ -577,8 +577,8 @@ def load_privkey(pk, passphrase=None):
             # We don't support serialization to the format though.
             try:
                 return x509.load_privkey(pk, passphrase=passphrase)
-            except Exception as err:  # pylint: disable=broad-except
-                log.debug(f"Failed loading as OpenSSL private key: {err}")
+            except Exception as err2:  # pylint: disable=broad-except
+                log.debug(f"Failed loading as OpenSSL private key: {err2}")
         raise CommandExecutionError("Could not load OpenSSH private key") from err
 
 
